@@ -10,18 +10,21 @@ import json
 import time
 import logging
 import configparser
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
 from index_advisor_selector.index_selection.heu_selection.heu_utils.heu_com import get_utilized_indexes, get_columns_from_schema
 from index_advisor_selector.index_selection.heu_selection.heu_utils.candidate_generation import candidates_per_query, \
     syntactically_relevant_indexes_dqn_rule, \
     syntactically_relevant_indexes_openGauss
 
-from .mcts_model import State, Node, MCTS
+from index_advisor_selector.index_selection.mcts_selection.mcts_model import State, Node, MCTS
 
-from .mcts_utils.cost_evaluation import CostEvaluation
-from .mcts_utils.postgres_dbms import PostgresDatabaseConnector
-from .mcts_utils.mcts_com import syntactically_relevant_indexes, get_parser, pre_work, plot_report, mb_to_b
-from .mcts_utils.mcts_workload import Column, Table, Index, Workload
+from index_advisor_selector.index_selection.mcts_selection.mcts_utils.cost_evaluation import CostEvaluation
+from index_advisor_selector.index_selection.mcts_selection.mcts_utils.postgres_dbms import PostgresDatabaseConnector
+from index_advisor_selector.index_selection.mcts_selection.mcts_utils.mcts_com import syntactically_relevant_indexes, get_parser, pre_work, plot_report, mb_to_b
+from index_advisor_selector.index_selection.mcts_selection.mcts_utils.mcts_workload import Column, Table, Index, Workload
 
 
 class MCTSAdvisor:
@@ -44,9 +47,13 @@ class MCTSAdvisor:
         assert self.did_run is False, "Selection algorithm can only run once."
         self.did_run = True
 
+        # cost_estimations 表示 db_connector 调用数据库代价估计器的总次数（在 PG 中是调用 explain <SQL>）
+        # cost_estimation_duration 表示 db_connector 调用数据库代价估计器的总时间
         estimation_num_bef = self.database_connector.cost_estimations
         estimation_duration_bef = self.database_connector.cost_estimation_duration
 
+        # simulated_indexes 表示 db_connector 调用虚拟索引创建方法的总次数
+        # （在 PG 中是调用 select * from hypopg_create_index('create index on table_name (column1, column2)')）
         simulation_num_bef = self.database_connector.simulated_indexes
         simulation_duration_bef = self.database_connector.index_simulation_duration
 
@@ -99,6 +106,7 @@ class MCTSAdvisor:
 
         # Generate syntactically relevant candidates
         # (0917): newly added.
+        # 这里为每条查询分别生成了候选索引，生成的 potential_index 每一个元素是一个列表，表示每条查询的候选索引
         if self.parameters.cand_gen is None or self.parameters.cand_gen == "permutation":
             potential_index = candidates_per_query(
                 Workload(workload),
@@ -137,7 +145,6 @@ class MCTSAdvisor:
             candidates = set(cand_set)
 
             potential_index = copy.deepcopy(candidates)
-
             _ = self.cost_evaluation.calculate_cost(
                 Workload(workload), potential_index
                 , store_size=True  # newly added.
@@ -208,42 +215,43 @@ class MCTSAdvisor:
 
 
 if __name__ == "__main__":
-    process, overhead = True, True
-
+    # 解析参数
     parser = get_parser()
     args = parser.parse_args()
-
-    # bench = "tpch"
-    # if bench == "tpch":  # 1
-    #     args.schema_file = "../data_resource/db_info/schema_tpch_1gb.json"
-    #     args.work_file = "../data_resource/bench_template/tpch_template21_index_info.json"
-    #     args.work_file = "../data_resource/visrew_spj_data/server103/tpch_1gb/s103_tpch_1gb_4all05_tblcol_index_all.json"
-    #     args.work_file = "../data_resource/visrew_spj_data/bak/server151/tpch_1gb/s151_tpch_1gb_4all01_tblcol_index_all.json"
-    #     args.db_file = "../data_resource/db_info/tpch_conf/db103_tpch_1gb.conf"
-    #
-    # with open(args.work_file, "r") as rf:
-    #     work_json = json.load(rf)
-    # work_list = [work_json[0]["sql"]]
-    #
-    # args.budget = 200
-    # args.cardinality = 5
-    # args.max_index_width = 2
-    # args.select_policy = "UCT"  # ["UCT", "EPSILON"]
-    # args.roll_num = 1
-    # args.best_policy = "BG"  # ["BCE", "BG"]
-
+    # 初始化数据库连接
     db_conf = configparser.ConfigParser()
     db_conf.read(args.db_file)
     database_connector = PostgresDatabaseConnector(db_conf, autocommit=True)
-    advisor = MCTSAdvisor(database_connector, args, process=process)
+    # 读取工作负载
+    if args.work_file.endswith(".sql"):
+        with open(args.work_file, "r") as rf:
+            work_list = rf.readlines()
+    elif args.work_file.endswith(".json"):
+        with open(args.work_file, "r") as rf:
+            work_list = json.load(rf)
+            work_list = work_list[:10]
+    # 预处理工作负载
+    workloads = list()
+    for workload in work_list:
+        workload = pre_work(workload, args.schema_file)
+        workloads.append(workload)
 
-    with open(args.work_file, "r") as rf:
-        work_list = rf.readlines()
-
-    workload = pre_work(work_list, args.schema_file)
-    indexes, sel_infos = advisor.calculate_best_indexes(workload, overhead=overhead)
-
-    no_cost, ind_cost = 0, 0
-    for sql in work_list:
-        no_cost += database_connector.get_ind_cost(sql, "", mode="hypo")
-        ind_cost += database_connector.get_ind_cost(sql, indexes, mode="hypo")
+    # 计算最佳索引
+    for workload in workloads:
+        # 初始化蒙特卡洛树索引推荐算法
+        advisor = MCTSAdvisor(database_connector, args, args.process)
+        # 通过蒙特卡洛树索引推荐算法计算最佳索引
+        indexes, sel_infos = advisor.calculate_best_indexes(workload, overhead=args.overhead)
+        # 输出最佳索引
+        indexes_pre = list()
+        for index in indexes:
+            index_pre = f"{index.columns[0].table.name}#{','.join([col.name for col in index.columns])}"
+            indexes_pre.append(index_pre)
+        indexes_pre.sort()
+        print(indexes_pre)
+        # 输出索引优化成本
+        print("--- workload %d---" % workloads.index(workload))
+        for sql in workload:
+            origin_sql_cost = database_connector.get_ind_cost(sql.text, "", mode="hypo")
+            tuned_sql_cost = database_connector.get_ind_cost(sql.text, indexes, mode="hypo")
+            print(f"origin_sql_cost: {origin_sql_cost}, tuned_sql_cost: {tuned_sql_cost}")

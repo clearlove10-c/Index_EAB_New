@@ -189,11 +189,13 @@ class PostgresDatabaseConnector(DatabaseConnector):
         """
         try:
             for index in indexes:
-                index_def = index.split("#")
-                index_name = index.replace("#", "_").replace(",", "_")
-                stmt = f"create index on {index_def[0]} ({index_def[1]})"
-                if len(index_def) == 3:
-                    stmt += f" include ({index_def[2]})"
+                columns = index.columns
+                table_name = columns[0].table.name
+                column_names = [column.name for column in columns]
+
+                stmt = f"create index on {table_name} ({column_names[0]})"
+                if len(column_names) > 1:
+                    stmt += f" include ({', '.join(column_names[1:])})"
                 if mode == "hypo":
                     stmt = f"select * from hypopg_create_index('{stmt}')"
                 self.exec_only(stmt)

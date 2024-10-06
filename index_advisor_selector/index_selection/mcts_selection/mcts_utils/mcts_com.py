@@ -212,11 +212,12 @@ def syntactically_relevant_indexes(workload, max_index_width):
         logging.debug(f"Indexable columns: {len(columns)}")
 
         indexable_columns_per_table = {}
+        # 按照表来组织可索引的列信息
         for column in columns:
             if column.table not in indexable_columns_per_table:
                 indexable_columns_per_table[column.table] = set()
             indexable_columns_per_table[column.table].add(column)
-
+        # 为每个表生成指定宽度范围内所有可能的列组合
         for table in indexable_columns_per_table:
             columns = indexable_columns_per_table[table]
             for index_length in range(1, max_index_width + 1):

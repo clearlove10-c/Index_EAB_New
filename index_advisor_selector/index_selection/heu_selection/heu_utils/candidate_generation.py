@@ -11,7 +11,7 @@ from .postgres_dbms import PostgresDatabaseConnector
 import index_advisor_selector.index_selection.dqn_selection.dqn_utils.Encoding as en
 import index_advisor_selector.index_selection.dqn_selection.dqn_utils.ParserForIndex as pi
 
-
+# 为每条查询分别生成候选索引
 def candidates_per_query(workload, max_index_width, candidate_generator):
     candidates = list()
     for query in workload.queries:
